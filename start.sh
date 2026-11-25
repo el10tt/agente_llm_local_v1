@@ -3,19 +3,23 @@
 #
 # Comprueba (e instala si falta, pidiendo confirmación): herramientas base,
 # driver NVIDIA, Docker + compose, NVIDIA Container Toolkit, Python venv y el
-# entorno virtual del agente. Después levanta los contenedores y descarga los
-# modelos que falten.
+# entorno virtual del agente. Después levanta los contenedores, descarga los
+# modelos que falten y arranca la interfaz web del agente (webui.py) en segundo plano.
 #
 # Uso:
 #   ./start.sh              # interactivo: pregunta antes de instalar con sudo
 #   ./start.sh -y           # responde "sí" a todo (para no estar delante)
-#   MODELOS="qwen3:8b" ./start.sh   # elige qué modelos descargar
+#   MODELOS="qwen3:8b" ./start.sh   # elige qué modelos descargar (el primero es el de la web)
+#   WEBUI_PORT=9000 ./start.sh      # otro puerto para la interfaz web (por defecto 8765)
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
 MODELOS="${MODELOS:-qwen3:8b qwen2.5-coder:7b}"
+PUERTO_WEB="${WEBUI_PORT:-8765}"
+USUARIO="${USER:-$(id -un)}"   # $USER puede no existir (cron, sudo -i...)
+RUN_DIR="$DIR/.run"   # pid y log de la interfaz web (añade .run/ a tu .gitignore)
 AUTO_SI=0
 if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
   AUTO_SI=1
@@ -101,14 +105,14 @@ if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | $SUDO sh
 fi
 
-if command -v systemctl >/dev/null 2>&1; then
+if command -v systemctl >/dev/null 2>&1 && ! systemctl is-active --quiet docker; then
   $SUDO systemctl enable --now docker >/dev/null 2>&1 || true
 fi
 
 GRUPO_NUEVO=0
-if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
+if ! id -nG "$USUARIO" | tr ' ' '\n' | grep -qx docker; then
   aviso "Tu usuario no está en el grupo docker: lo añado."
-  $SUDO usermod -aG docker "$USER"
+  $SUDO usermod -aG docker "$USUARIO"
   GRUPO_NUEVO=1
 fi
 
@@ -182,7 +186,7 @@ fi
 ok "entorno virtual listo"
 
 # --- 6) Comprobar archivos del proyecto --------------------------------------
-for f in docker-compose.yml agente.py manifiesto_agente.md; do
+for f in docker-compose.yml agente.py nucleo.py metricas.py webui.py web/index.html manifiesto_agente.md; do
   if [[ ! -f "$f" ]]; then
     error "No encuentro $f en $DIR"
     exit 1
@@ -222,16 +226,51 @@ for m in $MODELOS; do
   fi
 done
 
-# --- 9) Cómo usarlo ----------------------------------------------------------
+# --- 9) Interfaz web del agente ----------------------------------------------
+webui_en_marcha() {
+  local pid
+  pid="$(cat "$RUN_DIR/webui.pid" 2>/dev/null || true)"
+  [[ -n "$pid" ]] && grep -aq webui.py "/proc/$pid/cmdline" 2>/dev/null
+}
+
+mkdir -p "$RUN_DIR"
+info "Interfaz web del agente..."
+if webui_en_marcha; then
+  ok "ya estaba en marcha"
+else
+  AGENTE_MODELO="${AGENTE_MODELO:-${MODELOS%% *}}" WEBUI_PORT="$PUERTO_WEB" \
+    nohup .venv/bin/python webui.py >"$RUN_DIR/webui.log" 2>&1 &
+  WEB_PID=$!
+  disown "$WEB_PID" 2>/dev/null || true
+  echo "$WEB_PID" >"$RUN_DIR/webui.pid"
+  LISTO=0
+  for _ in $(seq 1 20); do
+    if curl -fsS "http://127.0.0.1:$PUERTO_WEB/salud" >/dev/null 2>&1 && kill -0 "$WEB_PID" 2>/dev/null; then
+      LISTO=1
+      break
+    fi
+    sleep 0.5
+  done
+  if (( ! LISTO )); then
+    error "La interfaz web no arrancó (¿puerto $PUERTO_WEB ocupado?). Log: $RUN_DIR/webui.log"
+    tail -n 5 "$RUN_DIR/webui.log" >&2 || true
+    rm -f "$RUN_DIR/webui.pid"
+    exit 1
+  fi
+  ok "arrancada (pid $WEB_PID)"
+fi
+
+# --- 10) Cómo usarlo ---------------------------------------------------------
 cat <<EOF
 
 ────────────────────────────────────────────────────────────
   Todo listo. Servicios activos:
 
+  Agente (interfaz web):  http://127.0.0.1:$PUERTO_WEB   <- chat, opciones, contexto y recursos
   Chat web (Open WebUI):  http://localhost:3000
   API de Ollama:          http://localhost:11434
 
-  Agente por terminal (desde $DIR):
+  Agente por terminal (alternativa, desde $DIR):
     python3 agente.py                  # pregunta antes de cada comando
     python3 agente.py --peaceful       # solo lectura sin preguntar
     python3 agente.py --thinking       # ver el razonamiento
@@ -241,6 +280,7 @@ cat <<EOF
   Comprobar que el modelo corre entero en GPU (tras la 1ª pregunta):
     docker exec ollama ollama ps       # debe decir 100% GPU
 
+  Logs: interfaz web en $RUN_DIR/webui.log, comandos ejecutados en ~/.agente_comandos.log
   Parar todo:  ./stop.sh   (./stop.sh --help para más opciones)
 ────────────────────────────────────────────────────────────
 EOF

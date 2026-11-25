@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# stop.sh — para Ollama + Open WebUI y libera la GPU.
+# stop.sh — para la interfaz web del agente, Ollama y Open WebUI, y libera la GPU.
 #
 # Uso:
 #   ./stop.sh           # para los contenedores (se conservan; ./start.sh los reanuda)
@@ -30,8 +30,25 @@ case "${1:-}" in
     ;;
 esac
 
+# --- Interfaz web del agente (no depende de Docker) ---
+RUN_DIR="$DIR/.run"
+PID_WEB="$(cat "$RUN_DIR/webui.pid" 2>/dev/null || true)"
+if [[ -n "$PID_WEB" ]] && grep -aq webui.py "/proc/$PID_WEB/cmdline" 2>/dev/null; then
+  info "Parando la interfaz web..."
+  kill "$PID_WEB" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    kill -0 "$PID_WEB" 2>/dev/null || break
+    sleep 0.25
+  done
+  if kill -0 "$PID_WEB" 2>/dev/null; then
+    kill -9 "$PID_WEB" 2>/dev/null || true
+  fi
+  ok "interfaz web parada"
+fi
+rm -f "$RUN_DIR/webui.pid"
+
 if ! command -v docker >/dev/null 2>&1; then
-  ok "Docker no está instalado: no hay nada que parar."
+  ok "Docker no está instalado: no hay contenedores que parar."
   exit 0
 fi
 

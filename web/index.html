@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agente local</title>
+<style nonce="__NONCE__">
+:root {
+  color-scheme: dark light;
+  --bg: #0d1117; --panel: #161b22; --panel2: #1c232d; --borde: #2b3441;
+  --texto: #e6edf3; --suave: #8d99a8; --acento: #58a6ff;
+  --ok: #3fb950; --aviso: #d29922; --mal: #f85149; --gen: #a371f7;
+  --cpu: #58a6ff; --ollama: #e3b341; --agente: #3fb950; --sistema: #8d99a8;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f3f5f8; --panel: #ffffff; --panel2: #f0f3f7; --borde: #d3d9e1;
+    --texto: #1b2330; --suave: #5c6878; --acento: #0b63d1;
+    --ok: #1a7f37; --aviso: #9a6700; --mal: #cf222e; --gen: #7c4dd6;
+    --cpu: #0b63d1; --ollama: #b57f00; --agente: #1a7f37; --sistema: #6b7686;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--texto); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; }
+button, select, textarea { font: inherit; color: inherit; }
+code, pre { font-family: var(--mono); }
+:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
+
+.top { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--borde); }
+.marca { font-weight: 650; display: flex; align-items: center; gap: 8px; }
+.punto { width: 9px; height: 9px; border-radius: 50%; background: var(--suave); }
+.punto.ok { background: var(--ok); } .punto.mal { background: var(--mal); }
+.top label { color: var(--suave); display: flex; align-items: center; gap: 6px; }
+.top select { background: var(--panel2); border: 1px solid var(--borde); border-radius: 6px; padding: 4px 8px; color: var(--texto); }
+.espacio { flex: 1; }
+.estado-ollama { color: var(--suave); font-size: 13px; }
+.banner-agro { background: var(--mal); color: #fff; font-weight: 650; padding: 6px 16px; text-align: center; }
+
+.rejilla { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 12px; padding: 12px; }
+.chat, .tarjeta { background: var(--panel); border: 1px solid var(--borde); border-radius: 10px; }
+.chat { display: flex; flex-direction: column; min-height: 0; }
+
+/* Medidor de contexto */
+.ctx { padding: 12px 14px; border-bottom: 1px solid var(--borde); --color: var(--ok); }
+.ctx.aviso { --color: var(--aviso); } .ctx.mal { --color: var(--mal); }
+.ctx-cab { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ctx-cab strong { font-size: 13px; }
+.ctx-num { font-family: var(--mono); }
+.ctx-pct { font-family: var(--mono); font-weight: 700; color: var(--color); }
+.ctx-vivo { color: var(--suave); font-size: 12px; margin-left: auto; }
+.barra { height: 14px; border-radius: 7px; background: var(--panel2); border: 1px solid var(--borde); overflow: hidden; display: flex; margin: 8px 0 6px; }
+.seg { height: 100%; width: 0; transition: width .25s ease; }
+.seg.prompt { background: var(--color); }
+.seg.gen { background: var(--color); opacity: .55; }
+.ctx-pie { display: flex; gap: 14px; flex-wrap: wrap; color: var(--suave); font-size: 12px; }
+.ctx-pie b { color: var(--texto); font-family: var(--mono); font-weight: 600; }
+.lg { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; background: var(--color); }
+.lg.gen { opacity: .55; }
+.ctx-alerta { margin-top: 8px; padding: 6px 10px; border-radius: 6px; font-size: 13px; background: var(--panel2); border-left: 3px solid var(--color); }
+
+/* Conversación */
+.mensajes { flex: 1; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.vacio { margin: auto; color: var(--suave); text-align: center; max-width: 38ch; }
+.msg { max-width: 92%; border-radius: 10px; padding: 8px 12px; overflow-wrap: anywhere; }
+.msg.usuario { align-self: flex-end; background: var(--acento); color: #fff; white-space: pre-wrap; }
+.msg.asistente { align-self: flex-start; background: var(--panel2); border: 1px solid var(--borde); }
+.msg.aviso { align-self: center; background: transparent; border: 1px dashed var(--aviso); color: var(--aviso); font-size: 13px; }
+.msg.herramienta, .msg.aprobar { align-self: flex-start; width: min(92%, 720px); background: var(--panel); border: 1px solid var(--borde); border-left: 3px solid var(--ollama); font-size: 13px; }
+.msg.aprobar { border-left-color: var(--mal); background: var(--panel2); }
+.msg pre { margin: 6px 0 0; padding: 8px 10px; border-radius: 6px; background: var(--bg); border: 1px solid var(--borde); overflow: auto; font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg code { background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: .92em; }
+.msg pre code { background: none; padding: 0; }
+.her-cab { color: var(--suave); }
+.her-cab b { color: var(--texto); font-family: var(--mono); }
+details > summary { cursor: pointer; color: var(--suave); font-size: 12.5px; }
+.razon { margin-bottom: 6px; } .razon[hidden] { display: none; }
+.razon-txt { margin-top: 4px; padding: 6px 10px; border-left: 2px solid var(--gen); color: var(--suave); font-size: 12.5px; white-space: pre-wrap; max-height: 240px; overflow: auto; }
+.botones { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+.botones .res { color: var(--suave); }
+button { cursor: pointer; border: 1px solid var(--borde); background: var(--panel2); border-radius: 7px; padding: 6px 14px; }
+button:hover { border-color: var(--acento); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.si { background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 600; }
+button.no { background: transparent; border-color: var(--mal); color: var(--mal); }
+button.primario { background: var(--acento); border-color: var(--acento); color: #fff; font-weight: 600; }
+
+.entrada { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--borde); align-items: flex-end; }
+.entrada textarea { flex: 1; resize: none; background: var(--panel2); border: 1px solid var(--borde); border-radius: 8px; padding: 8px 10px; min-height: 40px; max-height: 160px; }
+
+/* Lateral */
+.lateral { min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+.tarjeta { padding: 12px 14px; }
+.tarjeta h2 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--suave); }
+.op { display: flex; gap: 10px; padding: 6px 0; cursor: pointer; align-items: flex-start; }
+.op input { margin-top: 3px; accent-color: var(--acento); }
+.op small { display: block; color: var(--suave); font-size: 12px; line-height: 1.35; }
+.op.peligro b { color: var(--mal); }
+.op.inactiva { opacity: .5; }
+.nota { color: var(--suave); font-size: 12px; margin: 6px 0 0; }
+.modelo-info { font-size: 13px; margin-bottom: 8px; }
+.modelo-info .mal { color: var(--mal); font-weight: 600; }
+.grafica { margin-top: 10px; }
+.grafica h3 { margin: 0 0 2px; font-size: 12.5px; font-weight: 600; display: flex; justify-content: space-between; }
+.grafica canvas { width: 100%; height: 84px; display: block; background: var(--panel2); border: 1px solid var(--borde); border-radius: 6px; }
+.leyenda { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--suave); margin-top: 3px; }
+.leyenda b { color: var(--texto); font-family: var(--mono); font-weight: 600; }
+.sw { display: inline-block; width: 9px; height: 3px; margin-right: 5px; vertical-align: middle; border-radius: 2px; }
+
+@media (max-width: 920px) {
+  html, body { height: auto; }
+  .rejilla { grid-template-columns: 1fr; }
+  .chat { height: 80vh; }
+}
+@media (prefers-reduced-motion: reduce) { .seg { transition: none; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="marca"><span class="punto" id="punto" title="Conexión con el servidor"></span>Agente local</div>
+  <label>Modelo <select id="modelo"></select></label>
+  <label>Contexto <select id="numctx" title="Tamaño de la ventana (num_ctx). Más contexto = más VRAM para la KV cache."></select></label>
+  <span class="espacio"></span>
+  <span class="estado-ollama" id="estadoOllama">Ollama: …</span>
+  <button id="btnReset" title="Borra la conversación y recarga el manifiesto">Nueva conversación</button>
+</header>
+<div class="banner-agro" id="bannerAgro" hidden>MODO AGRO ACTIVO: el agente ejecuta TODOS los comandos sin preguntar</div>
+
+<main class="rejilla">
+  <section class="chat" aria-label="Conversación">
+    <div class="ctx" id="ctx">
+      <div class="ctx-cab">
+        <strong>Contexto</strong>
+        <span class="ctx-num" id="ctxNum">0 / 8.192 tokens</span>
+        <span class="ctx-pct" id="ctxPct">0%</span>
+        <span class="ctx-vivo" id="ctxVivo"></span>
+      </div>
+      <div class="barra" id="barra" role="progressbar" aria-label="Contexto usado" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="seg prompt" id="segPrompt"></div><div class="seg gen" id="segGen"></div>
+      </div>
+      <div class="ctx-pie">
+        <span><i class="lg"></i>prompt <b id="ctxPrompt">0</b></span>
+        <span><i class="lg gen"></i>generado <b id="ctxGen">0</b></span>
+        <span>libre <b id="ctxLibre">0</b></span>
+        <span>mensajes <b id="ctxMsgs">1</b></span>
+        <span id="ctxTps"></span>
+      </div>
+      <div class="ctx-alerta" id="ctxAlerta" hidden></div>
+    </div>
+    <div class="mensajes" id="mensajes" aria-live="polite"></div>
+    <div class="entrada">
+      <textarea id="texto" rows="1" placeholder="Escribe una orden…" title="Enter envía, Shift+Enter hace salto de línea" aria-label="Mensaje"></textarea>
+      <button class="primario" id="btnEnviar">Enviar</button>
+      <button id="btnParar" hidden>Parar</button>
+    </div>
+  </section>
+
+  <aside class="lateral">
+    <section class="tarjeta">
+      <h2>Opciones</h2>
+      <label class="op"><input type="checkbox" id="opThink"><span><b>Razonar (thinking)</b><small>Más listo, más lento y gasta contexto.</small></span></label>
+      <label class="op"><input type="checkbox" id="opVer"><span><b>Mostrar el razonamiento</b><small>Despliega el pensamiento en el chat.</small></span></label>
+      <label class="op" id="lbPeaceful"><input type="checkbox" id="opPeaceful"><span><b>Solo lectura sin preguntar</b><small>Auto-ejecuta solo la lista blanca de lectura.</small></span></label>
+      <label class="op peligro"><input type="checkbox" id="opAgro"><span><b>AGRO</b><small>Ejecuta TODO sin preguntar. Un 8B se equivoca.</small></span></label>
+      <label class="op"><input type="checkbox" id="opChino"><span><b>Razonar en chino</b><small>Piensa en chino, responde en español.</small></span></label>
+      <p class="nota">Las opciones se aplican a partir del siguiente mensaje; AGRO y «solo lectura» valen al instante.</p>
+    </section>
+
+    <section class="tarjeta">
+      <h2>Recursos (agente + LLM)</h2>
+      <div class="modelo-info" id="modeloInfo">Modelo en memoria: …</div>
+      <div class="grafica">
+        <h3><span>GPU y VRAM</span><span id="gpuExtra"></span></h3>
+        <canvas id="cGpu" role="img" aria-label="Uso de GPU y VRAM en los últimos 5 minutos"></canvas>
+        <div class="leyenda" id="lGpu"></div>
+      </div>
+      <div class="grafica">
+        <h3><span>CPU</span><span>% de la máquina</span></h3>
+        <canvas id="cCpu" role="img" aria-label="Uso de CPU en los últimos 5 minutos"></canvas>
+        <div class="leyenda" id="lCpu"></div>
+      </div>
+      <div class="grafica">
+        <h3><span>RAM</span><span id="ramExtra"></span></h3>
+        <canvas id="cRam" role="img" aria-label="Uso de memoria RAM en los últimos 5 minutos"></canvas>
+        <div class="leyenda" id="lRam"></div>
+      </div>
+      <p class="nota">Últimos 5 minutos, una muestra cada 2 s. «Ollama» suma sus procesos; «agente» es este servidor web.</p>
+    </section>
+  </aside>
+</main>
+
+<script nonce="__NONCE__">
+(() => {
+'use strict';
+const TOKEN = '__TOKEN__';
+const VENTANA = 300; // segundos de historia en las gráficas
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => Number(n).toLocaleString('es-ES');
+
+let cfg = {}, ocupado = false, actual = null, tarjetaAprobar = null, es = null;
+let ctx = { prompt: 0, gen: 0, estimado: false, num_ctx: 8192, mensajes: 1, tps: null, vivo: false };
+let muestras = [], ultimaT = 0, ps = null;
+let verRazon = false;
+try { verRazon = localStorage.getItem('verRazon') === '1'; } catch (e) { /* sin almacenamiento */ }
+
+async function api(ruta, cuerpo) {
+  const op = { headers: { 'X-Token': TOKEN } };
+  if (cuerpo !== undefined) {
+    op.method = 'POST';
+    op.headers['Content-Type'] = 'application/json';
+    op.body = JSON.stringify(cuerpo);
+  }
+  const r = await fetch(ruta, op);
+  let datos = null;
+  try { datos = await r.json(); } catch (e) { /* sin cuerpo */ }
+  if (!r.ok) throw new Error((datos && datos.error) || ('HTTP ' + r.status));
+  return datos;
+}
+
+/* ---------- Texto seguro: se escapa TODO antes de dar formato ---------- */
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function md(texto) {
+  return texto.split('```').map((p, i) => {
+    if (i % 2 === 1) {
+      const nl = p.indexOf('\n');
+      const cuerpo = nl >= 0 ? p.slice(nl + 1) : p;
+      return '<pre><code>' + esc(cuerpo.replace(/\n$/, '')) + '</code></pre>';
+    }
+    let h = esc(p);
+    h = h.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+    h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    h = h.replace(/^#{1,6}\s+(.*)$/gm, '<strong>$1</strong>');
+    h = h.replace(/^\s*[-*]\s+(.*)$/gm, '• $1');
+    return h.replace(/\n/g, '<br>');
+  }).join('');
+}
+
+/* ---------- Medidor de contexto ---------- */
+function ctxDesdeUso(uso, mensajes) {
+  return { prompt: uso.prompt, gen: uso.generados, estimado: uso.estimado, tps: uso.tps,
+           num_ctx: uso.num_ctx, mensajes, vivo: false };
+}
+function pintarCtx() {
+  const total = ctx.num_ctx || 1;
+  const usados = ctx.prompt + ctx.gen;
+  const frac = usados / total;
+  const aprox = ctx.estimado || ctx.vivo ? '~' : '';
+  const nivel = frac >= 0.9 ? 'mal' : frac >= 0.7 ? 'aviso' : '';
+  $('ctx').className = 'ctx ' + nivel;
+  $('ctxNum').textContent = aprox + fmt(usados) + ' / ' + fmt(total) + ' tokens';
+  $('ctxPct').textContent = aprox + Math.round(frac * 100) + '%';
+  const pp = Math.min(100, ctx.prompt / total * 100);
+  const pg = Math.min(100 - pp, ctx.gen / total * 100);
+  $('segPrompt').style.width = pp + '%';
+  $('segGen').style.width = pg + '%';
+  $('barra').setAttribute('aria-valuenow', String(Math.min(100, Math.round(frac * 100))));
+  $('ctxPrompt').textContent = aprox + fmt(ctx.prompt);
+  $('ctxGen').textContent = fmt(ctx.gen);
+  $('ctxLibre').textContent = fmt(Math.max(0, total - usados));
+  $('ctxMsgs').textContent = fmt(ctx.mensajes);
+  $('ctxTps').textContent = ctx.tps ? ctx.tps + ' tokens/s' : '';
+  $('ctxVivo').textContent = ctx.vivo ? 'generando…' : (ctx.estimado ? '~ = estimado' : '');
+  const alerta = $('ctxAlerta');
+  if (frac >= 1) {
+    alerta.hidden = false;
+    alerta.textContent = 'Contexto desbordado: Ollama tiene que descartar mensajes antiguos. Usa «Nueva conversación».';
+  } else if (frac >= 0.9) {
+    alerta.hidden = false;
+    alerta.textContent = 'Contexto casi lleno: el modelo puede empezar a olvidar sus instrucciones.';
+  } else {
+    alerta.hidden = true;
+  }
+}
+
+/* ---------- Conversación ---------- */
+const cont = $('mensajes');
+let seguir = true; // el chat sigue al último mensaje mientras el usuario no se haya desplazado hacia arriba
+cont.addEventListener('scroll', () => { seguir = cont.scrollHeight - cont.scrollTop - cont.clientHeight < 90; });
+function bajar() { if (seguir) cont.scrollTop = cont.scrollHeight; }
+function añadir(el) {
+  const vacio = cont.querySelector('.vacio');
+  if (vacio) vacio.remove();
+  cont.appendChild(el);
+  bajar();
+}
+function mostrarVacio() {
+  cont.innerHTML = '';
+  const d = document.createElement('div');
+  d.className = 'vacio';
+  d.textContent = 'Escribe una orden para empezar. Los comandos que el agente quiera ejecutar aparecerán aquí para que los apruebes.';
+  cont.appendChild(d);
+}
+function nodo(clase, html) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + clase;
+  if (html !== undefined) d.innerHTML = html;
+  return d;
+}
+function nuevaBurbuja(texto, razon) {
+  const el = nodo('asistente');
+  const det = document.createElement('details');
+  det.className = 'razon';
+  det.open = verRazon;
+  const sum = document.createElement('summary');
+  sum.textContent = 'Razonamiento';
+  const rt = document.createElement('div');
+  rt.className = 'razon-txt';
+  det.append(sum, rt);
+  const tx = document.createElement('div');
+  tx.className = 'txt';
+  el.append(det, tx);
+  const b = { el, det, rt, tx, texto: texto || '', razon: razon || '', pendiente: false };
+  pintarBurbuja(b);
+  return b;
+}
+function pintarBurbuja(b) {
+  b.rt.textContent = b.razon;
+  b.det.hidden = !b.razon;
+  b.tx.innerHTML = md(b.texto);
+  b.pendiente = false;
+}
+function programar(b) {
+  if (b.pendiente) return;
+  b.pendiente = true;
+  requestAnimationFrame(() => { pintarBurbuja(b); bajar(); });
+}
+function cerrarBurbuja() {
+  if (!actual) return;
+  pintarBurbuja(actual);
+  if (!actual.texto && !actual.razon) actual.el.remove();
+  actual = null;
+  bajar();
+}
+function tarjetaHerramienta(nombre, args) {
+  const el = nodo('herramienta');
+  const cab = document.createElement('div');
+  cab.className = 'her-cab';
+  cab.innerHTML = '⚙ herramienta <b></b>';
+  cab.querySelector('b').textContent = nombre;
+  const pre = document.createElement('pre');
+  pre.textContent = (args && args.comando) || (args && args.ruta) || JSON.stringify(args);
+  el.append(cab, pre);
+  return el;
+}
+function tarjetaResultado(texto) {
+  const lineas = texto.split('\n').length;
+  const det = document.createElement('details');
+  det.className = 'msg herramienta';
+  det.open = lineas <= 8;
+  const sum = document.createElement('summary');
+  sum.textContent = 'Salida (' + lineas + (lineas === 1 ? ' línea)' : ' líneas)');
+  const pre = document.createElement('pre');
+  pre.textContent = texto;
+  det.append(sum, pre);
+  return det;
+}
+function tarjetaAviso(texto) { const el = nodo('aviso'); el.textContent = texto; return el; }
+
+function pedirAprobacion(id, comando) {
+  const el = nodo('aprobar');
+  const t = document.createElement('div');
+  t.textContent = 'El agente quiere ejecutar este comando:';
+  const pre = document.createElement('pre');
+  pre.textContent = comando;
+  const bt = document.createElement('div');
+  bt.className = 'botones';
+  const si = document.createElement('button'); si.className = 'si'; si.textContent = 'Ejecutar';
+  const no = document.createElement('button'); no.className = 'no'; no.textContent = 'Rechazar';
+  const res = document.createElement('span'); res.className = 'res';
+  const decidir = (ok) => {
+    si.disabled = no.disabled = true;
+    api('/api/aprobar', { id, ok }).catch((e) => { res.textContent = e.message; });
+  };
+  si.onclick = () => decidir(true);
+  no.onclick = () => decidir(false);
+  bt.append(si, no, res);
+  el.append(t, pre, bt);
+  el.dataset.id = id;
+  el._res = res; el._botones = [si, no];
+  tarjetaAprobar = el;
+  añadir(el);
+  si.focus({ preventScroll: true });
+}
+function tarjetaDecidida(comando, ok) {
+  const el = nodo('aprobar');
+  const t = document.createElement('div');
+  t.textContent = ok ? 'Comando aprobado y ejecutado:' : 'Comando rechazado:';
+  const pre = document.createElement('pre');
+  pre.textContent = comando;
+  el.append(t, pre);
+  return el;
+}
+function resolverAprobacion(ok) {
+  if (!tarjetaAprobar) return;
+  tarjetaAprobar._botones.forEach((b) => { b.disabled = true; });
+  tarjetaAprobar._res.textContent = ok ? 'Ejecutado' : 'Rechazado';
+  tarjetaAprobar = null;
+}
+
+function renderHistorial(h) {
+  cont.innerHTML = '';
+  if (!h.length) { mostrarVacio(); return; }
+  for (const e of h) {
+    if (e.rol === 'usuario') { const el = nodo('usuario'); el.textContent = e.texto; cont.appendChild(el); }
+    else if (e.rol === 'asistente') cont.appendChild(nuevaBurbuja(e.texto, e.razonamiento).el);
+    else if (e.rol === 'herramienta') cont.appendChild(tarjetaHerramienta(e.nombre, e.args));
+    else if (e.rol === 'resultado') cont.appendChild(tarjetaResultado(e.texto));
+    else if (e.rol === 'aviso') cont.appendChild(tarjetaAviso(e.texto));
+    else if (e.rol === 'aprobacion') cont.appendChild(tarjetaDecidida(e.comando, e.ok));
+  }
+  seguir = true;
+  bajar();
+}
+
+/* ---------- Eventos en directo ---------- */
+function alEvento(e) {
+  switch (e.tipo) {
+    case 'usuario': { const el = nodo('usuario'); el.textContent = e.texto; añadir(el); break; }
+    case 'inicio_llamada':
+      cerrarBurbuja();
+      actual = nuevaBurbuja();
+      actual.el.hidden = false;
+      añadir(actual.el);
+      ctx.prompt = e.prompt_est; ctx.gen = 0; ctx.estimado = true; ctx.vivo = true; ctx.num_ctx = e.num_ctx;
+      pintarCtx();
+      break;
+    case 'razonamiento': if (actual) { actual.razon += e.t; programar(actual); } break;
+    case 'texto': if (actual) { actual.texto += e.t; programar(actual); } break;
+    case 'tokens': ctx.gen = e.gen; pintarCtx(); break;
+    case 'uso':
+      ctx = ctxDesdeUso(e.uso, e.mensajes);
+      pintarCtx();
+      break;
+    case 'fin_llamada': cerrarBurbuja(); break;
+    case 'herramienta': añadir(tarjetaHerramienta(e.nombre, e.args)); break;
+    case 'resultado': añadir(tarjetaResultado(e.texto)); break;
+    case 'aviso': añadir(tarjetaAviso(e.texto)); break;
+    case 'aprobar': pedirAprobacion(e.id, e.comando); break;
+    case 'aprobacion_resuelta': resolverAprobacion(e.ok); break;
+    case 'config': aplicarCfg(e.cfg); ctx.num_ctx = e.uso.num_ctx; pintarCtx(); break;
+    case 'reset':
+      actual = null; tarjetaAprobar = null;
+      mostrarVacio();
+      ctx = { prompt: 0, gen: 0, estimado: false, num_ctx: e.uso.num_ctx, mensajes: 1, tps: null, vivo: false };
+      pintarCtx();
+      break;
+    case 'fin': ocupado = false; ctx.vivo = false; pintarCtx(); pintarBotones(); break;
+  }
+}
+
+function conectar(desde) {
+  if (es) es.close();
+  es = new EventSource('/api/eventos?token=' + encodeURIComponent(TOKEN) + '&desde=' + desde);
+  es.onmessage = (m) => { try { alEvento(JSON.parse(m.data)); } catch (err) { console.error(err); } };
+  es.onopen = () => { $('punto').className = 'punto ok'; };
+  es.onerror = () => {
+    $('punto').className = 'punto mal';
+    es.close();
+    setTimeout(iniciar, 2000); // reconstruye todo desde el estado del servidor
+  };
+}
+
+async function iniciar() {
+  try {
+    const st = await api('/api/estado');
+    aplicarCfg(st.cfg);
+    ocupado = st.ocupado;
+    ctx = ctxDesdeUso(st.uso, st.mensajes);
+    renderHistorial(st.historial);
+    actual = null; tarjetaAprobar = null;
+    if (st.parcial) {
+      actual = nuevaBurbuja(st.parcial.texto, st.parcial.razonamiento);
+      añadir(actual.el);
+      ctx.vivo = true;
+    }
+    if (st.pendiente) pedirAprobacion(st.pendiente.id, st.pendiente.comando);
+    pintarCtx(); pintarBotones();
+    conectar(st.ultimo_evento);
+  } catch (e) {
+    $('punto').className = 'punto mal';
+    setTimeout(iniciar, 2000);
+  }
+}
+
+/* ---------- Controles ---------- */
+const OPCIONES_CTX = [2048, 4096, 8192, 12288, 16384, 24576, 32768];
+function aplicarCfg(c) {
+  cfg = c;
+  $('opThink').checked = c.think;
+  $('opPeaceful').checked = c.peaceful;
+  $('opAgro').checked = c.agro;
+  $('opChino').checked = c.chino;
+  $('opVer').checked = verRazon;
+  $('lbPeaceful').classList.toggle('inactiva', c.agro);
+  $('bannerAgro').hidden = !c.agro;
+  const sel = $('numctx');
+  const valores = OPCIONES_CTX.includes(c.num_ctx) ? OPCIONES_CTX : [...OPCIONES_CTX, c.num_ctx].sort((a, b) => a - b);
+  sel.innerHTML = '';
+  valores.forEach((v) => { const o = document.createElement('option'); o.value = v; o.textContent = fmt(v); sel.appendChild(o); });
+  sel.value = String(c.num_ctx);
+  const m = $('modelo');
+  if (![...m.options].some((o) => o.value === c.modelo)) {
+    const o = document.createElement('option'); o.value = c.modelo; o.textContent = c.modelo; m.appendChild(o);
+  }
+  m.value = c.modelo;
+}
+function pintarBotones() {
+  $('btnEnviar').hidden = ocupado;
+  $('btnParar').hidden = !ocupado;
+  $('texto').disabled = ocupado;
+  if (!ocupado) $('texto').focus({ preventScroll: true });
+}
+async function guardarCfg(parcial) {
+  try { aplicarCfg((await api('/api/config', parcial)).cfg); }
+  catch (e) { añadir(tarjetaAviso('No se pudo cambiar la opción: ' + e.message)); aplicarCfg(cfg); }
+}
+$('opThink').onchange = (e) => guardarCfg({ think: e.target.checked });
+$('opPeaceful').onchange = (e) => guardarCfg({ peaceful: e.target.checked });
+$('opChino').onchange = (e) => guardarCfg({ chino: e.target.checked });
+$('opAgro').onchange = (e) => {
+  if (e.target.checked && !confirm('AGRO ejecuta TODOS los comandos que decida el modelo, sin pedirte confirmación.\n\n¿Activarlo?')) {
+    e.target.checked = false;
+    return;
+  }
+  guardarCfg({ agro: e.target.checked });
+};
+$('opVer').onchange = (e) => {
+  verRazon = e.target.checked;
+  try { localStorage.setItem('verRazon', verRazon ? '1' : '0'); } catch (err) { /* sin almacenamiento */ }
+  document.querySelectorAll('.razon').forEach((d) => { d.open = verRazon; });
+};
+$('modelo').onchange = (e) => guardarCfg({ modelo: e.target.value });
+$('numctx').onchange = (e) => guardarCfg({ num_ctx: parseInt(e.target.value, 10) });
+
+async function enviar() {
+  const t = $('texto').value.trim();
+  if (!t || ocupado) return;
+  try {
+    await api('/api/enviar', { texto: t });
+    ocupado = true;
+    $('texto').value = '';
+    $('texto').style.height = '';
+    pintarBotones();
+  } catch (e) { añadir(tarjetaAviso(e.message)); }
+}
+$('btnEnviar').onclick = enviar;
+$('btnParar').onclick = () => api('/api/parar', {}).catch((e) => añadir(tarjetaAviso(e.message)));
+$('btnReset').onclick = () => {
+  if (ocupado) { añadir(tarjetaAviso('Pulsa Parar antes de reiniciar la conversación.')); return; }
+  api('/api/reset', {}).catch((e) => añadir(tarjetaAviso(e.message)));
+};
+$('texto').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); enviar(); }
+});
+$('texto').addEventListener('input', (e) => {
+  e.target.style.height = 'auto';
+  e.target.style.height = Math.min(160, e.target.scrollHeight) + 'px';
+});
+
+/* ---------- Gráficas de recursos ---------- */
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function grafica(canvas, series, maximo) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w || !h) return;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  }
+  const c = canvas.getContext('2d');
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, w, h);
+  const pl = 28, pr = 6, pt = 6, pb = 6;
+  const gw = w - pl - pr, gh = h - pt - pb;
+  c.font = '10px ' + css('--mono');
+  c.textBaseline = 'middle';
+  c.strokeStyle = css('--borde'); c.fillStyle = css('--suave'); c.lineWidth = 1;
+  [0, 50, 100].forEach((p) => {
+    const y = pt + gh * (1 - p / 100) + 0.5;
+    c.beginPath(); c.moveTo(pl, y); c.lineTo(w - pr, y); c.stroke();
+    c.fillText(p + '', 4, Math.min(h - 7, Math.max(7, y)));
+  });
+  const ahora = ultimaT || Date.now() / 1000;
+  series.forEach((s) => {
+    c.strokeStyle = css(s.color); c.lineWidth = 1.8; c.beginPath();
+    let abierto = false;
+    muestras.forEach((m) => {
+      const v = s.valor(m);
+      if (v == null || isNaN(v)) { abierto = false; return; }
+      const x = pl + gw * (1 - (ahora - m.t) / VENTANA);
+      const y = pt + gh * (1 - Math.min(100, Math.max(0, v / maximo * 100)) / 100);
+      if (!abierto) { c.moveTo(x, y); abierto = true; } else c.lineTo(x, y);
+    });
+    c.stroke();
+  });
+}
+function leyenda(el, items) {
+  el.innerHTML = '';
+  items.forEach((it) => {
+    const s = document.createElement('span');
+    const sw = document.createElement('i'); sw.className = 'sw'; sw.style.background = css(it.color);
+    const b = document.createElement('b'); b.textContent = it.texto;
+    s.append(sw, it.nombre + ' ', b);
+    el.appendChild(s);
+  });
+}
+const pct = (v) => (v == null ? '—' : v.toFixed(0) + '%');
+const gib = (b) => (b / 1073741824).toFixed(1) + ' GiB';
+const mib = (m) => (m / 1024).toFixed(1) + ' GiB';
+const pctDe = (a, b) => (a == null || !b ? null : 100 * a / b);
+
+function pintarRecursos() {
+  const u = muestras[muestras.length - 1];
+  const gpu = (m) => m.gpu;
+  grafica($('cGpu'), [
+    { color: '--cpu', valor: (m) => gpu(m) && gpu(m).util },
+    { color: '--gen', valor: (m) => gpu(m) && pctDe(gpu(m).vram_usada, gpu(m).vram_total) },
+  ], 100);
+  grafica($('cCpu'), [
+    { color: '--sistema', valor: (m) => m.cpu },
+    { color: '--ollama', valor: (m) => m.cpu_ollama },
+    { color: '--agente', valor: (m) => m.cpu_agente },
+  ], 100);
+  grafica($('cRam'), [
+    { color: '--sistema', valor: (m) => pctDe(m.ram_usada, m.ram_total) },
+    { color: '--ollama', valor: (m) => pctDe(m.ram_ollama, m.ram_total) },
+    { color: '--agente', valor: (m) => pctDe(m.ram_agente, m.ram_total) },
+  ], 100);
+  if (!u) return;
+  const g = u.gpu;
+  if (g) {
+    leyenda($('lGpu'), [
+      { color: '--cpu', nombre: 'GPU', texto: pct(g.util) },
+      { color: '--gen', nombre: 'VRAM', texto: g.vram_usada == null ? '—' : mib(g.vram_usada) + ' / ' + mib(g.vram_total) },
+    ]);
+    const extra = [];
+    if (g.temp != null) extra.push(g.temp + ' °C');
+    if (g.potencia != null) extra.push(g.potencia.toFixed(0) + ' W');
+    $('gpuExtra').textContent = extra.join(' · ');
+  } else {
+    leyenda($('lGpu'), []);
+    $('gpuExtra').textContent = 'sin nvidia-smi';
+  }
+  leyenda($('lCpu'), [
+    { color: '--sistema', nombre: 'sistema', texto: pct(u.cpu) },
+    { color: '--ollama', nombre: 'Ollama', texto: pct(u.cpu_ollama) },
+    { color: '--agente', nombre: 'agente', texto: pct(u.cpu_agente) },
+  ]);
+  $('ramExtra').textContent = gib(u.ram_usada) + ' / ' + gib(u.ram_total);
+  leyenda($('lRam'), [
+    { color: '--sistema', nombre: 'sistema', texto: pct(pctDe(u.ram_usada, u.ram_total)) },
+    { color: '--ollama', nombre: 'Ollama', texto: gib(u.ram_ollama) },
+    { color: '--agente', nombre: 'agente', texto: gib(u.ram_agente) },
+  ]);
+}
+function pintarModelo(ollamaOk) {
+  const e = $('estadoOllama');
+  e.textContent = ollamaOk ? 'Ollama: conectado' : 'Ollama: sin respuesta';
+  e.style.color = ollamaOk ? '' : css('--mal');
+  const mi = $('modeloInfo');
+  mi.textContent = '';
+  if (!ollamaOk) { mi.textContent = 'No consigo hablar con Ollama (¿está en marcha? ./start.sh).'; return; }
+  if (!ps) { mi.textContent = 'Ningún modelo cargado (se carga con la primera petición).'; return; }
+  const total = ps.tam || 0, vram = ps.tam_vram || 0;
+  const enGpu = total ? Math.round(100 * vram / total) : 0;
+  mi.append(document.createTextNode(ps.modelo + ' · ' + gib(total) + ' · '));
+  const r = document.createElement('span');
+  r.textContent = enGpu + '% en GPU' + (enGpu < 100 ? ' / ' + (100 - enGpu) + '% en CPU (más lento)' : '');
+  if (enGpu < 100) r.className = 'mal';
+  mi.appendChild(r);
+  if (ps.ctx) mi.append(document.createTextNode(' · contexto cargado ' + fmt(ps.ctx)));
+}
+async function sondear() {
+  try {
+    const d = await api('/api/metricas?desde=' + ultimaT);
+    ps = d.ps;
+    d.muestras.forEach((m) => { muestras.push(m); ultimaT = Math.max(ultimaT, m.t); });
+    const corte = ultimaT - VENTANA - 10;
+    while (muestras.length && muestras[0].t < corte) muestras.shift();
+    pintarModelo(d.ollama_ok);
+    pintarRecursos();
+  } catch (e) { /* el indicador de conexión ya avisa */ }
+}
+
+async function cargarModelos() {
+  try {
+    const d = await api('/api/modelos');
+    const m = $('modelo');
+    const actualM = cfg.modelo;
+    m.innerHTML = '';
+    const nombres = new Set(d.modelos);
+    if (actualM) nombres.add(actualM);
+    [...nombres].sort().forEach((n) => { const o = document.createElement('option'); o.value = n; o.textContent = n; m.appendChild(o); });
+    if (actualM) m.value = actualM;
+  } catch (e) { /* sin lista: queda el modelo actual */ }
+}
+
+window.addEventListener('resize', pintarRecursos);
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', pintarRecursos);
+mostrarVacio();
+iniciar().then(cargarModelos);
+sondear();
+setInterval(sondear, 2000);
+})();
+</script>
+</body>
+</html>

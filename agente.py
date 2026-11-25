@@ -5,7 +5,6 @@ import os
 import pathlib
 import re
 import readline  # activa Ctrl+L, flechas, historial, Ctrl+R...
-import shlex
 import shutil
 import subprocess
 import sys
@@ -80,22 +79,25 @@ preparar_entorno()
 asegurar_dependencias()
 
 import requests  # noqa: E402  (va aquí a propósito, después de preparar el entorno)
+import nucleo  # noqa: E402
+from nucleo import SUFIJO_CHINO, TOOLS, leer_archivo  # noqa: E402
 
 URL = "http://localhost:11434/api/chat"
 MODEL = "qwen3:8b"
 THINK = True                # True = el modelo razona antes de responder (más lento, más listo)
 NUM_CTX = 8192
+CTX_AVISO = 0.70            # el medidor de contexto se pone amarillo a partir de este %
+CTX_PELIGRO = 0.90          # ...y rojo a partir de este (conviene hacer /reset)
 PEACEFUL = False            # lo activa el flag --peaceful
 AGRO = False                # lo activa el flag --agro
 MOSTRAR_PENSAMIENTO = False # lo activa el flag --thinking
 RAZONAR_CHINO = False       # lo activa el flag --chinese
-# Se añade a cada mensaje tuyo cuando usas --chinese: razona en chino, responde en español
-SUFIJO_CHINO = "（请用中文思考，用西班牙语回答）"
 HISTORIAL = pathlib.Path("~/.agente_history").expanduser()
 MANIFIESTO = pathlib.Path(__file__).resolve().parent / "manifiesto_agente.md"
 AYUDA = """Comandos:
   /reset          borra la conversación y recarga el manifiesto
   /modelo [x]     muestra o cambia el modelo (ej. /modelo qwen2.5-coder:7b)
+  /ctx            muestra cuánto contexto se está usando (también se ve tras cada respuesta)
   /ayuda          muestra esto
   /salir          sale (también Ctrl+D)
 Atajos: Ctrl+L limpia la pantalla, flechas = historial, Ctrl+C interrumpe.
@@ -106,10 +108,7 @@ Flags al arrancar: --peaceful (solo lectura sin preguntar), --thinking (ver el r
 
 def cargar_manifiesto():
     """Lee el manifiesto y rellena los datos de contexto."""
-    texto = MANIFIESTO.read_text(encoding="utf-8")
-    return (texto.replace("{script}", os.path.abspath(__file__))
-                 .replace("{directorio}", os.getcwd())
-                 .replace("{usuario}", os.environ.get("USER", "desconocido")))
+    return nucleo.cargar_manifiesto(MANIFIESTO, __file__)
 
 
 # --- Historial de lo que escribes, persistente entre sesiones ---
@@ -121,114 +120,14 @@ readline.set_history_length(1000)
 atexit.register(readline.write_history_file, HISTORIAL)
 
 
-# --- Modo --peaceful: qué se considera "solo lectura" ---
-SOLO_LECTURA = {
-    "ls", "cat", "head", "tail", "pwd", "whoami", "id", "uname", "uptime", "df", "du",
-    "free", "ps", "stat", "grep", "egrep", "fgrep", "wc", "cut", "tr", "echo", "printf",
-    "which", "realpath", "dirname", "basename", "lsblk", "lscpu", "nproc",
-    "find", "sort", "uniq", "date", "hostname", "nvidia-smi",
-    "lspci", "lsusb", "lsmod", "vmstat", "sensors", "top",
-}
-SIN_ARGUMENTOS = {"hostname", "nvidia-smi"}  # solo valen sin argumentos
-FIND_PROHIBIDO = ("-exec", "-ok", "-delete", "-fprint", "-fls")
-
-
-def segmento_ok(seg):
-    """Un comando simple (sin pipes): ¿es de solo lectura?"""
-    if not seg or seg[0] not in SOLO_LECTURA:
-        return False
-    cmd, args = seg[0], seg[1:]
-    if cmd in SIN_ARGUMENTOS:
-        return not args
-    if cmd == "find":  # find puede borrar, ejecutar o escribir con estas opciones
-        return not any(a.startswith(FIND_PROHIBIDO) for a in args)
-    if cmd == "sort":  # sort -o / --output escribe en un archivo
-        return not any(a.startswith("--") or (a.startswith("-") and "o" in a) for a in args)
-    if cmd == "uniq":  # uniq entrada salida escribe en "salida"
-        return sum(1 for a in args if not a.startswith("-")) <= 1
-    if cmd == "date":  # date <fecha> o -s cambian la hora del sistema
-        return all(a.startswith("+") or a in ("-u", "--utc") for a in args)
-    if cmd == "top":   # solo "top -bn1" y similares; el top interactivo se cuelga
-        cortas = [a for a in args if a.startswith("-") and not a.startswith("--")]
-        return any("b" in a for a in cortas) and any("n" in a for a in cortas)
-    return True
-
-
-def es_solo_lectura(comando):
-    """True solo si el comando es claramente de solo lectura. Ante la duda: False (se pregunta)."""
-    if any(c in comando for c in ("\n", "\r", "`", "$(", "<(", ">(")):
-        return False
-    try:
-        lex = shlex.shlex(comando, posix=True, punctuation_chars=True)
-        lex.whitespace_split = True
-        tokens = list(lex)
-    except ValueError:
-        return False
-    segmentos, actual = [], []
-    for t in tokens:
-        if t == "|":
-            segmentos.append(actual)
-            actual = []
-        elif t and set(t) <= set(";&<>()"):  # ;  &&  ||  >  >>  <  etc.
-            return False
-        else:
-            actual.append(t)
-    segmentos.append(actual)
-    return all(segmento_ok(s) for s in segmentos)
-
-
-# --- Protección contra programas interactivos ---
-INTERACTIVOS = {"htop", "btop", "vim", "vi", "nano", "less", "more", "man", "watch", "tmux", "screen"}
-
-
-def es_interactivo(comando):
-    try:
-        tokens = shlex.split(comando)
-    except ValueError:
-        return False
-    if not tokens:
-        return False
-    if tokens[0] in INTERACTIVOS:
-        return True
-    # "top" solo es válido en modo batch (-b)
-    return tokens[0] == "top" and not any(a.startswith("-") and "b" in a for a in tokens[1:])
-
-
-# --- Las "manos": funciones reales que ejecuta tu máquina ---
-def leer_archivo(ruta):
-    return pathlib.Path(ruta).expanduser().read_text()[:3000]
-
-
+# --- Las "manos": el filtro de seguridad y las herramientas viven en nucleo.py ---
 def ejecutar_comando(comando):
-    if es_interactivo(comando):
-        return ("Error: ese programa es interactivo y no funciona aquí. "
-                "Usa una alternativa no interactiva (por ejemplo 'top -bn1' o 'ps aux').")
-    if not (AGRO or (PEACEFUL and es_solo_lectura(comando))):
-        if input(f"\n¿Ejecutar '{comando}'? [s/N] ").lower() != "s":
-            return "El usuario rechazó el comando."
-    r = subprocess.run(comando, shell=True, capture_output=True, text=True,
-                       timeout=60, stdin=subprocess.DEVNULL)
-    return (r.stdout + r.stderr)[:3000] or "(sin salida)"
+    return nucleo.ejecutar_comando(
+        comando, agro=AGRO, peaceful=PEACEFUL, origen="cli",
+        preguntar=lambda c: input(f"\n¿Ejecutar '{c}'? [s/N] ").lower() == "s")
 
 
 FUNCIONES = {"leer_archivo": leer_archivo, "ejecutar_comando": ejecutar_comando}
-
-TOOLS = [
-    {"type": "function", "function": {
-        "name": "leer_archivo",
-        "description": "Lee el contenido de un archivo de texto",
-        "parameters": {"type": "object",
-                       "properties": {"ruta": {"type": "string", "description": "Ruta del archivo"}},
-                       "required": ["ruta"]}}},
-    {"type": "function", "function": {
-        "name": "ejecutar_comando",
-        "description": "Ejecuta un comando de shell en Linux y devuelve su salida. "
-                       "Solo comandos NO interactivos que terminen solos (nada de htop, vim, nano, less; "
-                       "usa 'top -bn1' en vez de 'top').",
-        "parameters": {"type": "object",
-                       "properties": {"comando": {"type": "string", "description": "Comando a ejecutar"}},
-                       "required": ["comando"]}}},
-]
 
 # --- Colores ---
 BASE = "\033[0m\033[38;5;16m\033[48;5;231m"   # texto negro sobre fondo blanco
@@ -236,6 +135,9 @@ NEGRITA = "\033[1m\033[48;5;252m"             # negrita negra sobre gris claro
 FIN_NEGRITA = "\033[22m\033[48;5;231m"        # vuelve a texto normal sobre blanco
 GRIS = "\033[2m\033[38;5;245m"                # razonamiento en gris tenue
 RESET = "\033[0m"
+VERDE = "\033[32m"
+AMARILLO = "\033[33m"
+ROJO = "\033[31m"
 
 
 def renderizar(texto):
@@ -245,11 +147,55 @@ def renderizar(texto):
     return "\n".join(BASE + linea + "\033[K\033[0m" for linea in texto.split("\n"))
 
 
+# --- Medidor de contexto ---
+# Última medición, para poder consultarla con /ctx
+ULTIMO_USO = {"prompt": 0, "generados": 0, "estimado": False}
+
+
+def formatear_uso():
+    """Barra de uso del contexto a partir de la última medición."""
+    prompt, generados = ULTIMO_USO["prompt"], ULTIMO_USO["generados"]
+    usados = prompt + generados
+    frac = usados / NUM_CTX
+    color = VERDE if frac < CTX_AVISO else AMARILLO if frac < CTX_PELIGRO else ROJO
+    llenos = min(10, round(frac * 10))
+    barra = "█" * llenos + "░" * (10 - llenos)
+    aprox = "~" if ULTIMO_USO["estimado"] else ""
+    linea = (f"{color}[ctx {aprox}{usados}/{NUM_CTX} {barra} {frac:.0%} "
+             f"| prompt {aprox}{prompt} + generado {generados}]{RESET}")
+    if frac >= 1:
+        linea += (f"\n{ROJO}⚠ Contexto desbordado: Ollama tiene que descartar mensajes antiguos "
+                  f"para que quepa el prompt. Haz /reset.{RESET}")
+    elif frac >= CTX_PELIGRO:
+        linea += (f"\n{ROJO}⚠ Contexto casi lleno: el modelo puede empezar a olvidar sus "
+                  f"instrucciones. Considera /reset.{RESET}")
+    return linea
+
+
+def medidor_contexto(datos):
+    """Lee los contadores del último trozo del stream de Ollama y devuelve la barra de uso.
+
+    prompt_eval_count = tokens que se le han enviado al modelo (manifiesto + historial + resultados).
+    eval_count        = tokens que ha generado, razonamiento incluido: ocupan ventana mientras
+                        se generan, aunque luego no se reenvíen en el historial.
+    Si Ollama no da prompt_eval_count (pasa con la caché de prompt en algunas versiones),
+    se reutiliza el último valor conocido y se marca con ~.
+    """
+    estimado = "prompt_eval_count" not in datos
+    prompt = ULTIMO_USO["prompt"] if estimado else datos["prompt_eval_count"]
+    ULTIMO_USO.update(prompt=prompt, generados=datos.get("eval_count", 0), estimado=estimado)
+    salida = formatear_uso()
+    if datos.get("done_reason") == "length":
+        salida += f"\n{ROJO}⚠ Ollama cortó la respuesta por límite de longitud/contexto.{RESET}"
+    return salida
+
+
 def chat(model, messages):
     """Bucle del agente con streaming: pensar -> usar herramienta -> pensar... hasta dar respuesta final."""
     while True:
         contenido, tool_calls = "", []
         pensando = False
+        final = {}  # último trozo del stream (done=true): trae los contadores de tokens
         try:
             with requests.post(URL, json={
                 "model": model, "messages": messages, "tools": TOOLS,
@@ -259,7 +205,10 @@ def chat(model, messages):
                 for linea in r.iter_lines():
                     if not linea:
                         continue
-                    msg = json.loads(linea).get("message", {})
+                    datos = json.loads(linea)
+                    msg = datos.get("message", {})
+                    if datos.get("done"):
+                        final = datos
                     if msg.get("thinking") and MOSTRAR_PENSAMIENTO:
                         if not pensando:
                             print(f"{GRIS}💭 Razonando...{RESET}")
@@ -280,10 +229,16 @@ def chat(model, messages):
             resp["tool_calls"] = tool_calls
         messages.append(resp)
 
+        uso = medidor_contexto(final) if final else ""
+
         if not tool_calls:
             print(renderizar(contenido))
+            if uso:
+                print(uso)
             return
 
+        if uso:
+            print(uso)
         for call in tool_calls:
             nombre = call["function"]["name"]
             args = call["function"]["arguments"]
@@ -352,7 +307,15 @@ def main():
             except FileNotFoundError:
                 print(f"No encuentro el manifiesto: {MANIFIESTO}")
                 continue
+            ULTIMO_USO.update(prompt=0, generados=0, estimado=False)
             print("Conversación reiniciada (manifiesto recargado).")
+            continue
+        if entrada == "/ctx":
+            if ULTIMO_USO["prompt"] or ULTIMO_USO["generados"]:
+                print(formatear_uso())
+            else:
+                print("Aún no hay mediciones: haz primero una petición.")
+            print(f"Mensajes en la conversación: {len(messages)}")
             continue
         if entrada.startswith("/modelo"):
             partes = entrada.split(maxsplit=1)
